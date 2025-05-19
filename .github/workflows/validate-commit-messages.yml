@@ -1,0 +1,37 @@
+name: Validate Commit Messages
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, edited, reopened]
+
+jobs:
+  commit-check:
+    name: Check commit messages
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Get commit messages
+      run: |
+        echo "Checking commit messages..."
+        git fetch origin main --depth=1
+        COMMITS=$(git log origin/main..HEAD --pretty=format:"%s")
+
+        echo "$COMMITS" | while read -r msg; do
+          if ! echo "$msg" | grep -Eq "^\[.+\]"; then
+            echo "Invalid commit message:"
+            echo "   $msg"
+            echo "All commit messages must start with [SOME_TAG]"
+            exit 1
+          fi
+        done
+
+        echo "All commit messages are valid."
+
