@@ -20,18 +20,5 @@ jobs:
 
     - name: Get commit messages
       run: |
-        echo "Checking commit messages..."
-        git fetch origin main --depth=1
-        COMMITS=$(git log origin/main..HEAD --pretty=format:"%s")
-
-        echo "$COMMITS" | while read -r msg; do
-          if ! echo "$msg" | grep -Eq "^\[.+\]"; then
-            echo "Invalid commit message:"
-            echo "   $msg"
-            echo "All commit messages must start with [SOME_TAG]"
-            exit 1
-          fi
-        done
-
-        echo "All commit messages are valid."
-
+        chmod +x scripts/check-commit-messages.sh
+        ./scripts/check-commit-messages.sh
