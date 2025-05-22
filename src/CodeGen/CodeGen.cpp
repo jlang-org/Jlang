@@ -22,6 +22,13 @@ CodeGenerator::CodeGenerator()
 
 void CodeGenerator::Generate(const std::vector<std::shared_ptr<AstNode>> &program)
 {
+    for (const auto &node : program)
+    {
+        if (node)
+        {
+            node->accept(*this);
+        }
+    }
 }
 
 void CodeGenerator::VisitFunctionDecl(FunctionDecl &)
@@ -60,9 +67,51 @@ void CodeGenerator::VisitFunctionDecl(FunctionDecl &)
 
     llvm::verifyFunction(*function);
 }
-void CodeGenerator::VisitInterfaceDecl(InterfaceDecl &) {}
-void CodeGenerator::VisitStructDecl(StructDecl &) {}
-void CodeGenerator::VisitVariableDecl(VariableDecl &) {}
+
+void CodeGenerator::VisitInterfaceDecl(InterfaceDecl &)
+{
+    JLANG_DEBUG(STR("Skipping codegen for interface: %s", node.name.c_str()));
+}
+
+void CodeGenerator::VisitStructDecl(StructDecl &)
+{
+    std::vector<llvm::Type *> fieldTypes;
+    for (const auto &field : node.fields)
+    {
+        fieldTypes.push_back(MapType(field.type));
+    }
+
+    llvm::StructType *structType = llvm::StructType::create(m_Context, node.name);
+    structType->setBody(fieldTypes);
+
+    JLANG_DEBUG(STR("Defined struct type: %s", node.name.c_str()));
+}
+
+void CodeGenerator::VisitVariableDecl(VariableDecl &)
+{
+    llvm::Type *varType = MapType(node.varType);
+    if (!varType)
+    {
+        JLANG_ERROR(STR("Unknown variable type: %s", node.varType.name.c_str()));
+        return;
+    }
+
+    llvm::AllocaInst *alloca = m_IRBuilder.CreateAlloca(varType, nullptr, node.name);
+
+    if (node.initializer)
+    {
+        node.initializer->accept(*this);
+        if (!m_LastValue)
+        {
+            JLANG_ERROR(STR("Failed to evaluate initializer for variable: %s", node.name.c_str()));
+            return;
+        }
+
+        m_IRBuilder.CreateStore(m_LastValue, alloca);
+    }
+
+    m_namedValues[node.name] = alloca;
+}
 
 void CodeGenerator::VisitIfStatement(IfStatement &)
 {
@@ -115,13 +164,90 @@ void CodeGenerator::VisitBlockStatement(BlockStatement &)
     }
 }
 
-void CodeGenerator::VisitExprStatement(ExprStatement &) {}
+void CodeGenerator::VisitExprStatement(ExprStatement &)
+{
+    if (node.expression)
+    {
+        node.expression->accept(*this);
+        // m_LastValue is ignored — result discarded
+    }
+}
 
-void CodeGenerator::VisitCallExpr(CallExpr &) {}
+void CodeGenerator::VisitCallExpr(CallExpr &)
+{
+    llvm::Function *callee = m_Module->getFunction(node.callee);
 
-void CodeGenerator::VisitBinaryExpr(BinaryExpr &) {}
+    if (!callee)
+    {
+        JLANG_ERROR(STR("Unknown function: %s", node.callee.c_str()));
+        return;
+    }
 
-void CodeGenerator::VisitLiteralExpr(LiteralExpr &) {}
+    std::vector<llvm::Value *> args;
+    for (auto &arg : node.arguments)
+    {
+        arg->accept(*this);
+        if (!m_LastValue)
+        {
+            JLANG_ERROR(STR("Invalid argument in call to %s", node.callee.c_str()));
+            return;
+        }
+        args.push_back(m_LastValue);
+    }
+
+    m_LastValue = m_IRBuilder.CreateCall(callee, args, node.callee + "_call");
+}
+
+void CodeGenerator::VisitBinaryExpr(BinaryExpr &)
+{
+    node.left->accept(*this);
+    llvm::Value *lhs = m_LastValue;
+
+    node.right->accept(*this);
+    llvm::Value *rhs = m_LastValue;
+
+    if (!lhs || !rhs)
+    {
+        JLANG_ERROR("Invalid operands in binary expression");
+        return;
+    }
+
+    if (node.op == "+")
+    {
+        if (lhs->getType()->isIntegerTy() && rhs->getType()->isIntegerTy())
+        {
+            m_LastValue = m_IRBuilder.CreateAdd(lhs, rhs, "addtmp");
+        }
+        else
+        {
+            JLANG_ERROR("Addition only supported on integer types");
+        }
+    }
+    else if (node.op == "==")
+    {
+        m_LastValue = m_IRBuilder.CreateICmpEQ(lhs, rhs, "eqtmp");
+    }
+    else
+    {
+        JLANG_ERROR(STR("Unsupported binary operator: %s", node.op.c_str()));
+    }
+}
+
+void CodeGenerator::VisitLiteralExpr(LiteralExpr &)
+{
+    // TODO --> don't to it like this
+    //  Try to parse as integer literal
+    try
+    {
+        int value = std::stoi(node.value);
+        m_LastValue = llvm::ConstantInt::get(m_Context, llvm::APInt(32, value));
+    }
+    catch (const std::invalid_argument &)
+    {
+        // Not a number — treat as string
+        m_LastValue = m_IRBuilder.CreateGlobalStringPtr(node.value);
+    }
+}
 
 void CodeGenerator::VisitCallExpr(BinaryExpr &)
 {
